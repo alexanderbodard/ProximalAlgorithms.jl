@@ -77,6 +77,10 @@ Base.@kwdef mutable struct ZeroFPRState{R,Tx,TAx,TH}
     is_prev_set::Bool = false
     d::Tx = similar(x)
     Ad::TAx = similar(Ax)
+    n_f_evals::Int = 0
+    n_grad_evals::Int = 0
+    n_prox_evals::Int = 0
+    n_mv_prods::Int = 0
 end
 
 f_model(iter::ZeroFPRIteration, state::ZeroFPRState) = f_model(state.f_Ax, state.At_grad_f_Ax, state.res, iter.alpha / state.gamma)
@@ -92,12 +96,13 @@ function Base.iterate(iter::ZeroFPRIteration{R}) where R
     state = ZeroFPRState(
         x=x, Ax=Ax, f_Ax=f_Ax, grad_f_Ax=grad_f_Ax, At_grad_f_Ax=At_grad_f_Ax,
         gamma=gamma, y=y, xbar=xbar, g_xbar=g_xbar, res=x - xbar, H=initialize(iter.directions, x),
+        n_grad_evals = 1
     )
     return state, state
 end
 
 function set_next_direction!(::QuasiNewtonStyle, ::ZeroFPRIteration, state::ZeroFPRState)
-    mul!(state.d, state.H, state.res_xbar)
+    mul!(state.d, state.H, state.res_xbar); state.n_mv_prods += 1
     state.d .*= -1
 end
 set_next_direction!(::NoAccelerationStyle, ::ZeroFPRIteration, state::ZeroFPRState) = state.d .= .-state.res
@@ -129,7 +134,8 @@ function Base.iterate(iter::ZeroFPRIteration{R}, state::ZeroFPRState) where R
         end
         f_Axbar_upp, f_Axbar
     else
-        mul!(state.Axbar, iter.A, state.xbar)
+        mul!(state.Axbar, iter.A, state.xbar); state.n_mv_prods += 1
+        state.n_f_evals += 1; state.n_grad_evals += 1
         f_model(iter, state), gradient!(state.grad_f_Axbar, iter.f, state.Axbar)
     end
 
@@ -137,7 +143,7 @@ function Base.iterate(iter::ZeroFPRIteration{R}, state::ZeroFPRState) where R
     FBE_x = f_Axbar_upp + state.g_xbar
 
     # compute residual at xbar
-    mul!(state.At_grad_f_Axbar, iter.A', state.grad_f_Axbar)
+    mul!(state.At_grad_f_Axbar, iter.A', state.grad_f_Axbar); state.n_mv_prods += 1
     state.y .= state.xbar .- state.gamma .* state.At_grad_f_Axbar
     g_xbarbar = prox!(state.xbarbar, iter.g, state.y, state.gamma)
     state.res_xbar .= state.xbar .- state.xbarbar
@@ -154,7 +160,7 @@ function Base.iterate(iter::ZeroFPRIteration{R}, state::ZeroFPRState) where R
 
     # Perform line-search over the FBE
     state.tau = R(1)
-    mul!(state.Ad, iter.A, state.d)
+    mul!(state.Ad, iter.A, state.d); state.n_mv_prods += 1
 
     sigma = iter.beta * (0.5 / state.gamma) * (1 - iter.alpha)
     tol = 10 * eps(R) * (1 + abs(FBE_x))
@@ -164,12 +170,12 @@ function Base.iterate(iter::ZeroFPRIteration{R}, state::ZeroFPRState) where R
         state.x .= state.xbar_prev .+ state.tau .* state.d
         state.Ax .= state.Axbar .+ state.tau .* state.Ad
         # TODO: can precompute most of next line in case f is quadratic
-        state.f_Ax = gradient!(state.grad_f_Ax, iter.f, state.Ax)
-        mul!(state.At_grad_f_Ax, iter.A', state.grad_f_Ax)
+        state.f_Ax = gradient!(state.grad_f_Ax, iter.f, state.Ax); state.n_grad_evals += 1
+        mul!(state.At_grad_f_Ax, iter.A', state.grad_f_Ax); state.n_mv_prods += 1
         state.y .= state.x .- state.gamma .* state.At_grad_f_Ax
-        state.g_xbar = prox!(state.xbar, iter.g, state.y, state.gamma)
+        state.g_xbar = prox!(state.xbar, iter.g, state.y, state.gamma); state.n_prox_evals += 1
         state.res .= state.x .- state.xbar
-        FBE_x = f_model(iter, state) + state.g_xbar
+        FBE_x = f_model(iter, state) + state.g_xbar; state.n_f_evals += 1
 
         if FBE_x <= threshold
             break
