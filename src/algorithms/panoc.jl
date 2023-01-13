@@ -79,6 +79,10 @@ Base.@kwdef mutable struct PANOCState{R,Tx,TAx,TH}
     Az::TAx = similar(Ax)
     grad_f_Az::TAx = similar(Ax)
     At_grad_f_Az::Tx = similar(x)
+    n_f_evals::Int = 0
+    n_grad_evals::Int = 0
+    n_prox_evals::Int = 0
+    n_mv_prods::Int = 0
 end
 
 f_model(iter::PANOCIteration, state::PANOCState) = f_model(state.f_Ax, state.At_grad_f_Ax, state.res, iter.alpha / state.gamma)
@@ -99,7 +103,7 @@ function Base.iterate(iter::PANOCIteration{R}) where R
 end
 
 function set_next_direction!(::QuasiNewtonStyle, ::PANOCIteration, state::PANOCState)
-    mul!(state.d, state.H, state.res)
+    mul!(state.d, state.H, state.res); state.n_mv_prods += 1
     state.d .*= -1
 end
 set_next_direction!(::NoAccelerationStyle, ::PANOCIteration, state::PANOCState) = state.d .= .-state.res
@@ -148,12 +152,12 @@ function Base.iterate(iter::PANOCIteration{R, Tx, Tf}, state::PANOCState) where 
 
     # backtrack tau 1 → 0
     state.tau = R(1)
-    mul!(state.Ad, iter.A, state.d)
+    mul!(state.Ad, iter.A, state.d); state.n_mv_prods += 1
 
     state.x_d .= state.x .+ state.d
     state.Ax_d .= state.Ax .+ state.Ad
     state.f_Ax_d = gradient!(state.grad_f_Ax_d, iter.f, state.Ax_d)
-    mul!(state.At_grad_f_Ax_d, adjoint(iter.A), state.grad_f_Ax_d)
+    mul!(state.At_grad_f_Ax_d, adjoint(iter.A), state.grad_f_Ax_d); state.n_mv_prods += 1
 
     copyto!(state.x, state.x_d)
     copyto!(state.Ax, state.Ax_d)
@@ -177,7 +181,7 @@ function Base.iterate(iter::PANOCIteration{R, Tx, Tf}, state::PANOCState) where 
         end
 
         if isinf(f_Az)
-            mul!(state.Az, iter.A, state.z_curr)
+            mul!(state.Az, iter.A, state.z_curr); state.n_mv_prods += 1
         end
 
         state.tau = k >= iter.max_backtracks ? R(0) : state.tau / 2
@@ -192,7 +196,7 @@ function Base.iterate(iter::PANOCIteration{R, Tx, Tf}, state::PANOCState) where 
                 f_Az = gradient!(state.grad_f_Az, iter.f, state.Az)
             end
             if isinf(c)
-                mul!(state.At_grad_f_Az, iter.A', state.grad_f_Az)
+                mul!(state.At_grad_f_Az, iter.A', state.grad_f_Az); state.n_mv_prods += 1
                 c = f_Az
                 b = real(dot(state.Ax_d, state.grad_f_Az)) - real(dot(state.Az, state.grad_f_Az))
                 a = state.f_Ax_d - b - c
@@ -204,7 +208,7 @@ function Base.iterate(iter::PANOCIteration{R, Tx, Tf}, state::PANOCState) where 
             # otherwise, in the general case where f is only smooth, we compute
             # one gradient and matvec per backtracking step
             state.f_Ax = gradient!(state.grad_f_Ax, iter.f, state.Ax)
-            mul!(state.At_grad_f_Ax, adjoint(iter.A), state.grad_f_Ax)
+            mul!(state.At_grad_f_Ax, adjoint(iter.A), state.grad_f_Ax); state.n_mv_prods += 1
         end
 
         state.y .= state.x .- state.gamma .* state.At_grad_f_Ax
